@@ -55,6 +55,33 @@ def _gate_cached(sess, max_age=120.0):
     _require_gate(sess)
 
 
+def _baseline(sess):
+    """Dirty packages at task start, so saves can include exactly what the task dirtied."""
+    try:
+        st = sess.request("state", {"full": True}, timeout=20.0, retries=0)["result"]
+        return sorted(set(st.get("dirty_maps") or []) | set(st.get("dirty_content") or []))
+    except (UedHostError, TransportError):
+        return None
+
+
+def _ensure_task(sess):
+    task = completion.load_task(sess.dir)
+    if task and task.get("status") == "active":
+        return task
+    task = completion.ensure_task(sess.dir)
+    task["baseline_dirty"] = _baseline(sess)
+    write_json(completion.task_path(sess.dir), task)
+    return task
+
+
+def _record_dirty_check(sess, dirty_now):
+    task = completion.load_task(sess.dir) or {}
+    base = task.get("baseline_dirty")
+    new = sorted(set(dirty_now) - set(base or [])) if base is not None else sorted(dirty_now)
+    sess.journal("dirty_check", new_dirty=new[:50], baseline_known=base is not None)
+    return new
+
+
 # ----------------------------------------------------------------- commands
 
 def cmd_doctor(args):
@@ -121,7 +148,8 @@ def cmd_actors(args):
 def cmd_level(args):
     sess = _session(args)
     _require_gate(sess)
-    completion.ensure_task(sess.dir)
+    if args.action == "new":
+        _ensure_task(sess)
     cmd = "level_new" if args.action == "new" else "level_open"
     payload = {"path": args.path, "save_dirty": args.save_dirty}
     if args.action == "new":
@@ -136,10 +164,16 @@ def cmd_batch(args):
     plan = load_plan(text)
     on_error = args.on_error or plan.get("on_error", "continue")
     ops, warnings, spawn_ids = prepare(plan)
+    if not ops:
+        return {"status": "failed", "code": "EMPTY_PLAN", "message": "plan has no ops", "warnings": warnings}, 1
+    if on_error == "rollback" and len(ops) > sess.cfg["chunk_size"]:
+        return {"status": "failed", "code": "ROLLBACK_TOO_LARGE",
+                "message": "rollback works per editor transaction (%d ops); this plan has %d. Split it, or use "
+                           "on_error=stop" % (sess.cfg["chunk_size"], len(ops))}, 1
     cache = AssetCache(sess)
     if cache.status(check_fs=True) == "fresh":
         known = cache.paths()
-        missing = [p for p in referenced_assets(ops) if p not in known]
+        missing = [p for p in referenced_assets(ops) if _cache_covers(p) and _asset_key(p) not in known]
         if missing:
             return {"status": "failed", "code": "MISSING_ASSETS", "missing": missing[:10],
                     "suggestions": {m: cache.suggest(m) for m in missing[:5]},
@@ -149,19 +183,22 @@ def cmd_batch(args):
                 "chunks": (len(ops) + sess.cfg["chunk_size"] - 1) // sess.cfg["chunk_size"],
                 "warnings": warnings, "sample": ops[:3]}, 0
     _gate_cached(sess)
-    completion.ensure_task(sess.dir)
+    _ensure_task(sess)
     t0 = time.time()
+    delete_budget = args.max_delete or sess.cfg["max_delete"]
+    resp = None
     totals = {"created": 0, "modified": 0, "unchanged": 0, "deleted": 0, "failed": 0, "rolled_back": 0}
     failures, assets_new, n_chunks, stopped = [], [], 0, False
     for chunk in chunks(ops, sess.cfg["chunk_size"]):
         n_chunks += 1
         resp = sess.request("batch", {"ops": chunk, "on_error": on_error, "allow_delete": args.allow_delete,
-                                      "max_delete": args.max_delete or sess.cfg["max_delete"],
+                                      "max_delete": delete_budget,
                                       "label": plan.get("label")}, expect_level=plan.get("level"))
         r = resp["result"]
         for k in totals:
             totals[k] += int(r["counts"].get(k, 0))
         failures.extend(r.get("failed") or [])
+        delete_budget = max(0, delete_budget - int(r["counts"].get("deleted", 0)))  # cap is per plan
         assets_new.extend(r.get("assets_created") or [])
         if r.get("stopped_early"):
             stopped = True
@@ -195,9 +232,22 @@ def cmd_batch(args):
     return out, 0 if status == "success" and out.get("saved", True) and out.get("verified", True) else 1
 
 
+def _asset_key(path):
+    """'/Game/A/SM_X.SM_X' or '/Game/BP/BP_X.BP_X_C' -> '/Game/A/SM_X' / '/Game/BP/BP_X'."""
+    return path.split(".")[0]
+
+
+def _cache_covers(path):
+    key = _asset_key(path)
+    return key.startswith("/Game/") or key.rsplit("/", 1)[0] == "/Engine/BasicShapes"
+
+
 def _do_save(sess, scope="task", save_as=None):
     t0 = now()
+    task = completion.load_task(sess.dir) or {}
     payload = {"scope": scope, "list_packages": True}
+    if task.get("status") == "active" and task.get("baseline_dirty") is not None:
+        payload["baseline_dirty"] = task["baseline_dirty"]
     if save_as:
         payload["save_as"] = save_as
     r = sess.request("save", payload)["result"]
@@ -208,6 +258,11 @@ def _do_save(sess, scope="task", save_as=None):
     sess.journal("save_files", ok=files["ok"] and not r["failed"], problems=files["problems"] + r["failed"][:5],
                  files_ok=files["files_ok"])
     sess.set_touched(set(sess.touched()) - set(r["packages"]))
+    if r.get("new_dirty_left") is not None:
+        new_left = r["new_dirty_left"]
+        sess.journal("dirty_check", new_dirty=new_left[:50], baseline_known=True)
+    else:
+        new_left = None
     ok = files["ok"] and not r["failed"] and (r.get("level_saved") is not False)
     out = {"status": "success" if ok else "failed", "saved": r["saved"], "level": r.get("level"),
            "files_verified": files["files_ok"], "failed": r["failed"][:10]}
@@ -217,7 +272,14 @@ def _do_save(sess, scope="task", save_as=None):
         out["problems"] = files["problems"]
     if r.get("user_dirty_left"):
         out["user_dirty_left"] = r["user_dirty_left"]
-        out["note"] = "unrelated unsaved user packages were left untouched"
+        out["note"] = "unsaved packages from before the task were left untouched"
+    if new_left is None and task.get("status") == "active":
+        # no baseline: leftovers can't be attributed; record them for the completion gate
+        try:
+            st = sess.request("state", {"full": True}, timeout=20.0, retries=0)["result"]
+            _record_dirty_check(sess, (st.get("dirty_maps") or []) + (st.get("dirty_content") or []))
+        except (UedHostError, TransportError):
+            pass
     return out, 0 if ok else 1
 
 
@@ -228,15 +290,17 @@ def cmd_save(args):
 
 
 def _expected_ids(sess):
+    """Spawned-and-not-deleted ids per level, for the current task."""
     task = completion.load_task(sess.dir) or {}
     started = task.get("started", 0)
-    alive = set()
+    alive = {}
     for e in read_jsonl(sess.path("evidence.jsonl")):
         if e.get("t", 0) < started or e.get("src") != "editor" or e.get("kind") != "batch":
             continue
-        alive |= set(e.get("spawn_ids") or [])
-        alive -= set(e.get("deleted_ids") or [])
-    return sorted(alive)
+        ids = alive.setdefault(e.get("level"), set())
+        ids |= set(e.get("spawn_ids") or [])
+        ids -= set(e.get("deleted_ids") or [])
+    return {lvl: sorted(ids) for lvl, ids in alive.items() if lvl}
 
 
 def _do_verify(sess, reload=False, level=None, min_actors=None):
@@ -267,7 +331,10 @@ def cmd_verify(args):
 def cmd_shot(args):
     sess = _session(args)
     _gate_cached(sess)
-    w, h = (int(x) for x in (args.res or "x".join(map(str, sess.cfg["shot_res"]))).lower().split("x"))
+    try:
+        w, h = (int(x) for x in (args.res or "x".join(map(str, sess.cfg["shot_res"]))).lower().split("x"))
+    except ValueError:
+        raise UedHostError("BAD_ARGS", "--res must look like 960x540")
     shot_id = new_id("s")
     path = sess.path("shots", shot_id + ".png")
     t0 = now()
@@ -342,10 +409,12 @@ def cmd_pie(args):
     sess.request("pie_start", {"simulate": args.simulate})
     t_end = time.time() + args.seconds
     started = False
-    while time.time() < t_end:
-        time.sleep(1.0)
-        started = started or sess.request("pie_status", retries=0)["result"]["pie"]
-    sess.request("pie_stop", retries=0)
+    try:
+        while time.time() < t_end:
+            time.sleep(1.0)
+            started = started or sess.request("pie_status", retries=0)["result"]["pie"]
+    finally:
+        sess.request("pie_stop", retries=2)  # never leave PIE running (it blocks all edits)
     found = logs.classify(logs.read_since(log_path, off))
     errors = {k: v for k, v in found["counts"].items() if k in ("blueprint_runtime", "error", "python")}
     ok = started and not errors
@@ -379,6 +448,9 @@ def cmd_task(args):
     if args.action == "start":
         t = completion.start_task(sess.dir, args.kind, goal=args.goal, level=args.level, min_actors=args.min_actors,
                                   visual=args.visual, functional=args.functional)
+        if args.kind not in ("code",):
+            t["baseline_dirty"] = t.get("baseline_dirty") or _baseline(sess)
+            write_json(completion.task_path(sess.dir), t)
         return {"task": t["id"], "kind": t["kind"], "requires": t["requires"]}, 0
     if args.action == "block":
         if not args.reason:
@@ -396,6 +468,16 @@ def cmd_task(args):
 
 def cmd_complete(args):
     sess = _session(args)
+    task = completion.load_task(sess.dir) or {}
+    ev = [e for e in read_jsonl(sess.path("evidence.jsonl")) if e.get("t", 0) >= task.get("started", now())]
+    ext = [e["t"] for e in ev if e.get("kind") in ("external_call", "external_mutation")]
+    checked = [e["t"] for e in ev if e.get("kind") == "dirty_check"]
+    if ext and (not checked or max(checked) < max(ext)):
+        try:
+            st = sess.request("state", {"full": True}, timeout=20.0, retries=0)["result"]
+            _record_dirty_check(sess, (st.get("dirty_maps") or []) + (st.get("dirty_content") or []))
+        except (UedHostError, TransportError):
+            pass
     v = completion.complete(sess.dir)
     sess.journal("complete_attempt", status=v["status"])
     return v, 0 if v["status"] == "success" else 1
@@ -561,6 +643,11 @@ def main(argv=None):
         return 1
     except OSError as exc:
         emit({"status": "error", "code": "OS_ERROR", "message": str(exc)}, args.pretty)
+        return 1
+    except Exception as exc:  # noqa: BLE001 - the agent must always get JSON, never a traceback
+        import traceback
+        emit({"status": "error", "code": "INTERNAL", "message": "%s: %s" % (type(exc).__name__, exc),
+              "trace": traceback.format_exc()[-1500:]}, args.pretty)
         return 1
     if isinstance(payload, dict) and "result" in payload and "ok" in payload:  # raw editor response (ued result)
         payload = payload["result"]

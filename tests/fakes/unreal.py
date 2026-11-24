@@ -861,6 +861,16 @@ class EditorAssetLibrary(object):
         return obj
 
     @staticmethod
+    def delete_asset(asset_path_to_delete):
+        p = asset_path_to_delete.split(".")[0]
+        ENGINE.assets.pop(p, None)
+        ENGINE.dirty.discard(p)
+        f = ENGINE.file_for(p)
+        if f:
+            os.remove(f)
+        return True
+
+    @staticmethod
     def duplicate_asset(source_asset_path, destination_asset_path):
         src = EditorAssetLibrary.load_asset(source_asset_path)
         if src is None:
@@ -980,9 +990,23 @@ class MaterialEditingLibrary(object):
 
     @staticmethod
     def set_material_instance_texture_parameter_value(instance, parameter_name, value, association=None):
-        instance.params[str(parameter_name)] = value._path
+        instance.params[str(parameter_name)] = value._path if value else None
         ENGINE.mark_dirty(instance._path)
         return True
+
+    @staticmethod
+    def get_material_instance_scalar_parameter_value(instance, parameter_name, association=None):
+        return instance.params.get(str(parameter_name), 0.0)
+
+    @staticmethod
+    def get_material_instance_vector_parameter_value(instance, parameter_name, association=None):
+        v = instance.params.get(str(parameter_name), [0, 0, 0, 1])
+        return LinearColor(*v)
+
+    @staticmethod
+    def get_material_instance_texture_parameter_value(instance, parameter_name, association=None):
+        v = instance.params.get(str(parameter_name))
+        return EditorAssetLibrary.load_asset(v) if v else None
 
     @staticmethod
     def update_material_instance(instance):

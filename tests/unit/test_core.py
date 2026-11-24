@@ -189,7 +189,7 @@ class HookTests(unittest.TestCase):
         task = completion.load_task(sdir)
         self.assertEqual(task["kind"], "auto")
         v = completion.evaluate(sdir)
-        self.assertIn("save after the last change (`ued save`)", v["missing"])
+        self.assertTrue(any("other editor tools were used" in m for m in v["missing"]), v)
         # read-only tools and relayed ued snippets are not counted
         n = _count_lines(os.path.join(sdir, "evidence.jsonl"))
         hooks.handle("post-tool", {"cwd": tmp, "tool_name": "mcp__unreal-mcp__describe_tools", "tool_input": {}})
@@ -261,7 +261,8 @@ class InstallerTests(unittest.TestCase):
         user = {"permissions": {"allow": ["Bash(ls)"]},
                 "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "notify.sh"}]}]}}
         tpl = install._render(os.path.join(helpers.ROOT, "integrations", "claude-code", "hooks.template.json"),
-                              'python3 "$CLAUDE_PROJECT_DIR/.claude/skills/ue-direct/scripts/ued.py"')
+                              {e: install.hook_command("python3", e, project_env="CLAUDE_PROJECT_DIR")
+                               for e in ("pre-tool", "post-tool", "stop")})
         once = install.merge_hooks(user, tpl)
         twice = install.merge_hooks(once, tpl)
         self.assertEqual(once, twice)

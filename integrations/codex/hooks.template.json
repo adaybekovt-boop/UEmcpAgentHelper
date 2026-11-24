@@ -3,19 +3,19 @@
     "PreToolUse": [
       {
         "matcher": "apply_patch|Edit|Write|Bash",
-        "hooks": [{"type": "command", "command": "{UED} hook pre-tool", "timeout": 10,
+        "hooks": [{"type": "command", "command": "{HOOK:pre-tool}", "timeout": 10,
                    "statusMessage": "UE-Direct: checking for fake native assets"}]
       }
     ],
     "PostToolUse": [
       {
         "matcher": "mcp__.*",
-        "hooks": [{"type": "command", "command": "{UED} hook post-tool", "timeout": 10}]
+        "hooks": [{"type": "command", "command": "{HOOK:post-tool}", "timeout": 10}]
       }
     ],
     "Stop": [
       {
-        "hooks": [{"type": "command", "command": "{UED} hook stop", "timeout": 30,
+        "hooks": [{"type": "command", "command": "{HOOK:stop}", "timeout": 30,
                    "statusMessage": "UE-Direct: completion gate"}]
       }
     ]

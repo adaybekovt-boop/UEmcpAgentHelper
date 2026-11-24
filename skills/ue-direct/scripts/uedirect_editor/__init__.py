@@ -94,6 +94,14 @@ def _dispatch(req):
 def run_request(path):
     """Execute the request stored at ``path``; write ``path + '.out.json'``."""
     out_path = path + ".out.json"
+    if os.path.exists(out_path):
+        # A retried/duplicated delivery of a request that already ran: never execute twice.
+        return "UED_DONE duplicate"
+    try:
+        fd = os.open(path + ".lock", os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except OSError:
+        return "UED_BUSY duplicate"  # another delivery of this request is running or crashed mid-way
     started = time.time()
     req = {}
     try:

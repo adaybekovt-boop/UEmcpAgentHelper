@@ -22,17 +22,13 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 SKILL_SRC = os.path.join(HERE, "skills", "ue-direct")
 BEGIN, END = "<!-- UE-DIRECT:BEGIN", "<!-- UE-DIRECT:END -->"
-HOOK_MARK = "ued.py\" hook"
+HOOK_MARK = "ue-direct"
 
 
 def _python_cmd(explicit=None):
     if explicit:
         return explicit
     return "python" if sys.platform == "win32" else "python3"
-
-
-def _ued_cmd(python, script):
-    return '%s "%s"' % (python, script)
 
 
 class Plan(object):
@@ -81,7 +77,21 @@ def _write_json(path, data):
 
 
 def _is_ours(handler):
-    return HOOK_MARK in (handler.get("command") or "")
+    cmd = handler.get("command") or ""
+    return HOOK_MARK in cmd and "hook" in cmd and "ued.py" in cmd
+
+
+def hook_command(python, event, script=None, project_env=None):
+    """A launcher that exits 0 when the skill is missing (a missing script must never make every
+    tool call fail: Python exits 2 on a missing file, which agents treat as 'block'). The script
+    path is resolved inside Python, so no shell variable expansion is needed (works on Windows)."""
+    if project_env:
+        path = "os.path.join(os.environ.get('%s','.'),'.claude','skills','ue-direct','scripts','ued.py')" % project_env
+    else:
+        path = repr(script)
+    code = ("import os,runpy,sys;p=%s;sys.argv=[p,'hook','%s'];"
+            "os.path.isfile(p) and runpy.run_path(p,run_name='__main__')" % (path, event))
+    return '%s -c "%s"' % (python, code)
 
 
 def merge_hooks(existing, template):
@@ -107,10 +117,13 @@ def remove_hooks(existing):
     return merge_hooks(existing, {"hooks": {}})
 
 
-def _render(template_path, ued):
+def _render(template_path, commands):
+    """Fill {HOOK:<event>} placeholders with JSON-escaped hook commands."""
     with open(template_path, "r", encoding="utf-8") as fh:
         text = fh.read()
-    return json.loads(text.replace("{UED}", ued.replace("\\", "\\\\").replace('"', '\\"')))
+    for event, cmd in commands.items():
+        text = text.replace("{HOOK:%s}" % event, json.dumps(cmd)[1:-1])
+    return json.loads(text)
 
 
 def upsert_block(text, block):
@@ -150,10 +163,10 @@ def install(project, agents, link=False, dry=False, python=None, hooks=True, ins
         snippet = fh.read()
     if "claude" in agents:
         _copy_skill(plan, os.path.join(project, ".claude", "skills", "ue-direct"), link)
-        ued = _ued_cmd(py, "$CLAUDE_PROJECT_DIR/.claude/skills/ue-direct/scripts/ued.py")
         if hooks:
             path = os.path.join(project, ".claude", "settings.json")
-            tpl = _render(os.path.join(HERE, "integrations", "claude-code", "hooks.template.json"), ued)
+            cmds = {e: hook_command(py, e, project_env="CLAUDE_PROJECT_DIR") for e in ("pre-tool", "post-tool", "stop")}
+            tpl = _render(os.path.join(HERE, "integrations", "claude-code", "hooks.template.json"), cmds)
             plan.do("merge hooks into %s" % path, lambda: _write_json(path, merge_hooks(_load_json(path), tpl)))
         if instructions:
             block = snippet.replace("{UED}", "%s .claude/skills/ue-direct/scripts/ued.py" % py)
@@ -162,10 +175,11 @@ def install(project, agents, link=False, dry=False, python=None, hooks=True, ins
     if "codex" in agents:
         dest = os.path.join(project, ".agents", "skills", "ue-direct")
         _copy_skill(plan, dest, link)
-        ued = _ued_cmd(py, os.path.join(os.path.abspath(dest), "scripts", "ued.py"))
+        script = os.path.join(os.path.abspath(dest), "scripts", "ued.py")
         if hooks:
             path = os.path.join(project, ".codex", "hooks.json")
-            tpl = _render(os.path.join(HERE, "integrations", "codex", "hooks.template.json"), ued)
+            cmds = {e: hook_command(py, e, script=script) for e in ("pre-tool", "post-tool", "stop")}
+            tpl = _render(os.path.join(HERE, "integrations", "codex", "hooks.template.json"), cmds)
             plan.do("merge hooks into %s" % path, lambda: _write_json(path, merge_hooks(_load_json(path), tpl)))
         if instructions:
             block = snippet.replace("{UED}", "%s .agents/skills/ue-direct/scripts/ued.py" % py)

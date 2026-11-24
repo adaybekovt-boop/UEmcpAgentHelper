@@ -108,10 +108,13 @@ def cmd_save(ctx, args):
         ctx.touch_package(level)
     maps, content = dirty_package_names()
     dirty = set(maps) | set(content)
+    baseline = args.get("baseline_dirty")  # dirty set when the task started (None = unknown)
     if scope == "all":
         targets = dirty
     else:
         targets = set(ctx.touched)
+        if baseline is not None:
+            targets |= dirty - set(baseline)  # everything dirtied during the task (incl. other tools)
         if level:
             targets.add(level)
             ext = _ext_actor_root(level)
@@ -128,8 +131,10 @@ def cmd_save(ctx, args):
     failed = sorted(targets & dirty_after)
     saved = sorted(targets - dirty_after)
     untouched_user = sorted(dirty_after - targets)
+    new_dirty_left = sorted(dirty_after - set(baseline)) if baseline is not None else None
     ctx.evidence("save", scope=scope, saved=saved, failed=failed, level=level, level_saved=level_saved,
-                 user_dirty_left=len(untouched_user))
+                 user_dirty_left=len(untouched_user), new_dirty_left=new_dirty_left,
+                 dirty_left=sorted(dirty_after)[:50])
     return {
         "saved": len(saved),
         "failed": failed[:20],
@@ -138,6 +143,7 @@ def cmd_save(ctx, args):
         "packages": saved if args.get("list_packages") else sample(saved, 10),
         "files": _system_paths(saved) if args.get("with_files") else None,
         "user_dirty_left": len(untouched_user),
+        "new_dirty_left": new_dirty_left,
         "user_dirty_sample": sample(untouched_user, 5),
     }
 
@@ -175,13 +181,17 @@ def cmd_verify(ctx, args):
     if not checks["level_on_disk"]:
         problems.append("level %s is not a saved asset" % level)
     maps, content = dirty_package_names()
-    checks["clean"] = not maps and not content
+    # Reloading a level only discards map packages and that level's external actors;
+    # unrelated dirty content (often the user's) survives and must not block verification.
+    ext = _ext_actor_root(level) if level else None
+    level_dirty = maps + [c for c in content if ext and c.startswith(ext)]
+    checks["clean"] = not level_dirty
     before = _fingerprint(ctx)
     wp_before = _wp_desc_count()
     reload_done = False
     if args.get("reload"):
         if not checks["clean"]:
-            problems.append("reload skipped: unsaved packages exist (%s); save first" % sample(maps + content, 5))
+            problems.append("reload skipped: unsaved level packages (%s); save first" % sample(level_dirty, 5))
         elif not checks["level_on_disk"]:
             problems.append("reload skipped: level not on disk")
         else:
@@ -207,6 +217,8 @@ def cmd_verify(ctx, args):
         if not checks["reload_same_count"]:
             problems.append("actor count %d before reload, %d after" % (before["actors"], after["actors"]))
     expect_ids = args.get("expect_ids") or []
+    if isinstance(expect_ids, dict):
+        expect_ids = expect_ids.get(level) or []
     if expect_ids:
         missing = [i for i in expect_ids if i not in after["ued"]]
         checks["expected_ids_present"] = not missing

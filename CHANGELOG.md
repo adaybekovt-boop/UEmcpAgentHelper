@@ -25,3 +25,26 @@ First public version.
 - **Completion Gate**: evidence-based, with task kinds, auto-started tasks, waivers and blocked tasks.
 - **Hooks** for Claude Code and Codex (pre-tool, post-tool, stop) and a non-destructive installer/uninstaller.
 - Unit, mock (20 required scenarios) and real-editor integration tests. Offline harness benchmark and end-to-end agent benchmark runner.
+
+### Fixes from the independent review (before release)
+- The editor never executes a request id twice, so a retry after a timeout cannot double-apply relative ops.
+- The completion gate:
+  - edits under `inspect`/`code` tasks now require save and verification;
+  - changes made by other editor tools are checked live against the dirty-package baseline taken at task start;
+  - an `auto` task with no changes no longer blocks;
+  - `level open` no longer starts a task.
+- `verify --reload` is blocked only by the level's own dirty packages, not by unrelated user edits.
+- Rollback now also removes created assets and restores material-instance parameters. Rollback is refused for multi-chunk plans and for component additions to existing Blueprints.
+- Hooks:
+  - quote-aware shell parsing; only the destination of `cp`/`mv` counts as a write;
+  - the `ued` exemption covers only a single plain `ued` invocation;
+  - the post-tool hook inspects the inner tool of Epic's `call_tool`;
+  - a launcher that exits 0 when the skill is missing.
+- The asset pre-check accepts object paths (`.Obj`, `_C`) and only checks scanned roots.
+- A non-MCP service on the MCP port no longer crashes the CLI. Truncated replies are retried safely.
+- The CLI always prints JSON: empty plans, bad args and internal errors included.
+- Smaller fixes:
+  - project process matching uses whole path components;
+  - the delete cap applies per plan, not per chunk;
+  - PIE is always stopped;
+  - expected-actor checks are per level.

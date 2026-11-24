@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -35,12 +36,14 @@ def list_editor_processes():
 
 
 def processes_for_project(procs, project):
+    """Split editor processes into this project's and others'. The .uproject name must be a whole
+    path component (Game.uproject must not match MyGame.uproject)."""
     key = project.uproject.replace("\\", "/").lower()
-    name = (project.name + ".uproject").lower()
+    name = re.compile(r"(^|[/\"'\s])%s\.uproject\b" % re.escape(project.name.lower()))
     mine, others = [], []
     for p in procs:
         cmd = p["cmd"].replace("\\", "/").lower()
-        (mine if key in cmd or name in cmd else others).append(p)
+        (mine if key in cmd or name.search(cmd) else others).append(p)
     return mine, others
 
 

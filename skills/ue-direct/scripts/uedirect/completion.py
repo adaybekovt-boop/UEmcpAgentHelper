@@ -38,10 +38,12 @@ def start_task(sdir, kind, goal=None, level=None, min_actors=None, visual=None, 
         raise UedHostError("BAD_KIND", "kind must be one of %s" % ", ".join(sorted(KINDS)))
     cur = load_task(sdir)
     inherited_start = None
+    inherited_baseline = None
     if cur and cur.get("status") == "active":
         if cur.get("kind") == "auto":
             # keep the work already recorded under the auto-started task
             inherited_start = cur["started"]
+            inherited_baseline = cur.get("baseline_dirty")
             cur["status"] = "superseded"
             _archive(sdir, cur)
         else:
@@ -53,6 +55,8 @@ def start_task(sdir, kind, goal=None, level=None, min_actors=None, visual=None, 
             "requires": {"changes": needs, "save": save, "reload": rel if reload is None else reload,
                          "visual": vis if visual is None else visual,
                          "functional": func if functional is None else functional}}
+    if inherited_baseline is not None:
+        task["baseline_dirty"] = inherited_baseline
     write_json(task_path(sdir), task)
     return task
 
@@ -98,11 +102,19 @@ def evaluate(sdir, task=None):
 
     batches = editor("batch")
     level_news = editor("level_new")
-    external = host("external_mutation")
-    mutations = [e for e in batches if e.get("mutated")] + level_news + external
+    # calls to other editor tools (recorded by the post-tool hook); whether they changed
+    # anything is decided by a live dirty-package check, not by guessing from tool names
+    external = host("external_call") + host("external_mutation")
+    ued_mutations = [e for e in batches if e.get("mutated")] + level_news
+    mutations = ued_mutations + external
+    if task["kind"] == "auto" and not mutations:
+        return {"status": "success", "task": task["id"], "kind": "auto", "note": "no editor changes to verify",
+                "checks": {}, "missing": []}
+    if task["kind"] in ("inspect", "code") and mutations:
+        # editor content changed under a read-only/code task: verify it like any edit
+        req.update(save=True, reload=None, visual=None)
     last_mut = max([e["t"] for e in mutations], default=0.0)
-    level_mutated = bool(level_news) or any(e.get("mutated") and _level_change(e) for e in batches) or \
-        any(e.get("level_affecting", True) for e in external)
+    level_mutated = bool(level_news) or any(e.get("mutated") and _level_change(e) for e in batches)
     if req["reload"] is None:
         req["reload"] = level_mutated
     if req["visual"] is None:
@@ -135,8 +147,24 @@ def evaluate(sdir, task=None):
     if failed:
         missing.append("%d op(s) failed and were not fixed: %s" % (len(failed), sorted(failed)[:5]))
 
+    # 2b. other editor tools: nothing they dirtied may stay unsaved
+    if external:
+        last_ext = max(e["t"] for e in external)
+        dchecks = [e for e in host("dirty_check") if e["t"] > last_ext]
+        if not dchecks:
+            missing.append("other editor tools were used: run `ued save` (saves what the task dirtied and "
+                           "checks for leftovers)")
+            checks["external_saved"] = False
+        else:
+            d = dchecks[-1]
+            checks["external_saved"] = not d.get("new_dirty")
+            if d.get("new_dirty"):
+                hint = "" if d.get("baseline_known") else \
+                    " (task baseline unknown: if these are the user's own edits, ask before `ued save --all`)"
+                missing.append("unsaved packages after other editor tools: %s%s" % (d["new_dirty"][:5], hint))
+
     # 3. native save after the last change
-    if req["save"] and mutations:
+    if req["save"] and ued_mutations:
         saves = [e for e in editor("save") if e["t"] > last_mut]
         good = [e for e in saves if not e.get("failed")]
         checks["saved"] = bool(good)
@@ -151,7 +179,7 @@ def evaluate(sdir, task=None):
 
     # 4. persistence: reload from disk and compare
     verifies = [e for e in editor("verify") if e["t"] > last_mut]
-    if req["reload"] and mutations:
+    if req["reload"] and ued_mutations:
         rel = [e for e in verifies if e.get("reload")]
         checks["reload_verified"] = bool(rel) and rel[-1].get("ok", False)
         if not checks["reload_verified"]:
@@ -202,7 +230,7 @@ def evaluate(sdir, task=None):
         "modified": totals["modified"],
         "deleted": totals["deleted"],
         "failed": len(failed),
-        "saved": checks.get("saved", None) if req["save"] and mutations else None,
+        "saved": checks.get("saved", checks.get("external_saved")) if req["save"] and mutations else None,
         "verified": (checks.get("reload_verified", True) and checks.get("files_verified", True)
                      and checks.get("verify_ok", True)) if mutations else None,
         "visual": checks.get("visual_review") if req["visual"] and mutations else None,

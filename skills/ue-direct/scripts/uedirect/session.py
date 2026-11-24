@@ -157,8 +157,10 @@ class Session(object):
                 last = None
             except TransportError as exc:
                 last = exc
-                # The command may have finished even though the reply was lost.
-                if _wait_file(out_path, 3.0):
+                # The command may still be running or may have finished although the reply was lost.
+                # Re-sending is safe (the editor never runs a request id twice), but wait first.
+                grace = 30.0 if exc.code in ("TRANSPORT_UNAVAILABLE", "TRANSPORT_BAD_REPLY") else 3.0
+                if _wait_file(out_path, grace if os.path.exists(path + ".lock") else 3.0):
                     break
                 if not exc.retryable:
                     break
@@ -171,7 +173,8 @@ class Session(object):
             if last is not None:
                 raise last
             raise UedHostError("NO_RESPONSE", "editor ran the snippet but wrote no response for %s" % rid,
-                               hint="check the editor Output Log (LogPython)")
+                               hint="check the editor Output Log (LogPython); if the editor crashed mid-request, "
+                                    "re-run the command (ids make it safe)")
         return self._finish(resp)
 
     def result(self, rid):

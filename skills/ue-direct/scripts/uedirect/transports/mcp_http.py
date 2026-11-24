@@ -11,6 +11,7 @@ tracks ``Mcp-Session-Id``. Locates the Python execution tool at runtime:
 The discovered mapping is cached on disk so later invocations skip discovery.
 """
 
+import http.client
 import json
 import os
 import re
@@ -123,15 +124,23 @@ class McpHttpTransport(Transport):
             raise TransportError("MCP HTTP %s: %s" % (exc.code, detail), code="TRANSPORT_HTTP_%d" % exc.code)
         except (urllib.error.URLError, OSError) as exc:
             raise TransportError("cannot reach Unreal MCP at %s: %s" % (self.url, getattr(exc, "reason", exc)))
-        with resp:
-            sid = resp.headers.get("Mcp-Session-Id")
-            if sid:
-                self.session_id = sid
-            raw = resp.read().decode("utf-8", "replace")
-            ctype = resp.headers.get("Content-Type", "")
+        try:
+            with resp:
+                sid = resp.headers.get("Mcp-Session-Id")
+                if sid:
+                    self.session_id = sid
+                raw = resp.read().decode("utf-8", "replace")
+                ctype = resp.headers.get("Content-Type", "")
+        except (OSError, http.client.HTTPException) as exc:  # timeout / connection lost mid-reply
+            raise TransportError("reply from %s was cut off: %s" % (self.url, exc), code="TRANSPORT_BAD_REPLY")
         if not expect_reply:
             return None
-        msgs = _parse_sse(raw) if "text/event-stream" in ctype else ([json.loads(raw)] if raw.strip() else [])
+        try:
+            msgs = _parse_sse(raw) if "text/event-stream" in ctype else ([json.loads(raw)] if raw.strip() else [])
+        except ValueError:
+            raise TransportError("%s did not answer with MCP JSON (another service on this port?)" % self.url,
+                                 code="TRANSPORT_NOT_MCP", retryable=False)
+        msgs = [m for m in msgs if isinstance(m, dict)]
         for m in msgs:
             if m.get("id") == payload.get("id"):
                 if "error" in m:
@@ -252,7 +261,7 @@ class McpHttpTransport(Transport):
     def probe(self, timeout=2.0):
         try:
             self.connect(timeout=timeout)
-        except TransportError:
+        except Exception:  # noqa: BLE001 - any failure means "no usable Unreal MCP here"
             return None
         info = {"transport": "mcp", "url": self.url, "server": getattr(self, "server", {})}
         inst = self.instance or {}

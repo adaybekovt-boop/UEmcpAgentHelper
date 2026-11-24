@@ -171,8 +171,8 @@ def cmd_state(ctx, args):
         "world_ready": editor_world() is not None,
         "asset_registry_loading": loading,
         "pie": in_pie(),
-        "dirty_maps": maps[:20],
-        "dirty_content": content[:20],
+        "dirty_maps": maps if args.get("full") else maps[:20],
+        "dirty_content": content if args.get("full") else content[:20],
         "dirty_content_count": len(content),
         "python": sys.version.split()[0],
     }

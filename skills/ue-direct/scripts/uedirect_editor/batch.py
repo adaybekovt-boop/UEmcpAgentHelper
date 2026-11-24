@@ -243,7 +243,14 @@ class _Chunk(object):
             raise UedError("CREATE_FAILED", "create_asset failed for %s" % path)
         self.assets_created.append([path, asset_class.__name__])
         self.ctx.touch_package(path)
+        self._undo_create(path)
         return obj
+
+    def _undo_create(self, path):
+        def undo():
+            unreal.EditorAssetLibrary.delete_asset(path)
+            self.assets_created[:] = [a for a in self.assets_created if a[0] != path]
+        self.undo.append(undo)
 
     def op_mi(self, op):
         """Create or update a Material Instance Constant (reuses an existing asset)."""
@@ -257,6 +264,8 @@ class _Chunk(object):
         else:
             mi = self._new_asset(path, unreal.MaterialInstanceConstant, unreal.MaterialInstanceConstantFactoryNew())
             status = "created"
+        if status != "created":
+            self._remember_mi(mi, op)
         if op.get("parent"):
             parent = self.ctx.load_asset(op["parent"])
             if parent is None:
@@ -280,6 +289,25 @@ class _Chunk(object):
         self.ctx.touch_package(path)
         return status
 
+    def _remember_mi(self, mi, op):
+        mel = unreal.MaterialEditingLibrary
+        old_parent = mi.get_editor_property("parent")
+        restores = [lambda: mel.set_material_instance_parent(mi, old_parent)]
+        for kind in ("scalar", "vector", "texture"):
+            getter = getattr(mel, "get_material_instance_%s_parameter_value" % kind, None)
+            setter = getattr(mel, "set_material_instance_%s_parameter_value" % kind)
+            for name in (op.get(kind) or {}):
+                if getter is None:
+                    raise UedError("NO_UNDO", "cannot snapshot %s parameter %s for rollback" % (kind, name))
+                old = getter(mi, name)
+                restores.append(lambda s=setter, n=name, v=old: s(mi, n, v))
+
+        def undo():
+            for r in restores:
+                r()
+            mel.update_material_instance(mi)
+        self.undo.append(undo)
+
     def op_bp(self, op):
         """Create (or reuse) an Actor Blueprint and add missing components."""
         path = op["path"]
@@ -294,6 +322,9 @@ class _Chunk(object):
             bp = self._new_asset(path, unreal.Blueprint, factory)
             status = "created"
         comps = op.get("components") or []
+        if comps and status != "created" and self.on_error == "rollback":
+            raise UedError("NO_UNDO", "adding components to an existing Blueprint cannot be rolled back; "
+                           "use on_error=stop or continue")
         if comps:
             sds = unreal.get_engine_subsystem(unreal.SubobjectDataSubsystem)
             lib = unreal.SubobjectDataBlueprintFunctionLibrary
@@ -353,6 +384,8 @@ class _Chunk(object):
         for p in paths:
             pkg = p.split(".")[0]
             self.ctx.touch_package(pkg)
+            if not op.get("replace"):
+                self._undo_create(pkg)
             obj = unreal.EditorAssetLibrary.load_asset(pkg)
             self.assets_created.append([pkg, obj.get_class().get_name() if obj else "Unknown"])
         return "created"
@@ -365,6 +398,7 @@ class _Chunk(object):
             raise UedError("DUPLICATE_FAILED", "duplicate_asset failed: %s -> %s" % (op["source"], op["dest"]))
         self.assets_created.append([op["dest"], obj.get_class().get_name()])
         self.ctx.touch_package(op["dest"])
+        self._undo_create(op["dest"])
         return "created"
 
 
@@ -417,7 +451,7 @@ def cmd_batch(ctx, args):
             chunk.counts = dict.fromkeys(chunk.counts, 0)
             chunk.counts["failed"] = len(chunk.failed)
             chunk.counts["rolled_back"] = rolled
-            chunk.ok_ids, chunk.created_ids, chunk.assets_created, chunk.spawn_ids = [], [], [], []
+            chunk.ok_ids, chunk.created_ids, chunk.spawn_ids = [], [], []
         else:
             for i, op in deferred_deletes:
                 _run_op(chunk, i, op, "delete")

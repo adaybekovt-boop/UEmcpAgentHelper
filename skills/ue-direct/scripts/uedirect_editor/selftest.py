@@ -12,7 +12,7 @@ REQUIRED = {
     "UnrealEditorSubsystem": ["get_editor_world", "get_level_viewport_camera_info", "set_level_viewport_camera_info"],
     "EditorLoadingAndSavingUtils": ["get_dirty_map_packages", "get_dirty_content_packages", "save_dirty_packages",
                                     "save_packages", "save_map"],
-    "EditorAssetLibrary": ["does_asset_exist", "load_asset", "duplicate_asset"],
+    "EditorAssetLibrary": ["does_asset_exist", "load_asset", "duplicate_asset", "delete_asset"],
     "AssetRegistryHelpers": ["get_asset_registry"],
     "AutomationLibrary": ["take_high_res_screenshot"],
     "SystemLibrary": ["execute_console_command", "get_engine_version"],

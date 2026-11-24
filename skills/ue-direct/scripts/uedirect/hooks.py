@@ -16,6 +16,7 @@ detected. Hooks are a guard rail, not a sandbox.
 import json
 import os
 import re
+import shlex
 import sys
 
 from . import completion
@@ -27,12 +28,12 @@ PROTECTED = re.compile(r"Saved[\\/]+UEDirect[\\/]+(evidence\.jsonl|task\.json|ta
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit", "apply_patch", "write_file", "edit_file",
                "create_file", "str_replace_editor"}
 SHELL_TOOLS = {"Bash", "PowerShell", "shell", "local_shell", "exec_command", "container.exec"}
-# shell constructs that write to a path: redirection, tee, cp/mv/dd/install, PowerShell writers
-SHELL_WRITE = re.compile(
-    r"(>{1,2}\s*['\"]?(?P<redir>[^\s'\";|&]+))|"
-    r"(\b(?:tee|cp|mv|install|dd|rsync|Copy-Item|Move-Item|Set-Content|Out-File|Add-Content|New-Item)\b"
-    r"(?P<args>[^;|&]*))", re.I)
-READ_ONLY_MCP = re.compile(r"(list_|describe_|get_|search_|read_me|grep_|find_|query|inspect)", re.I)
+READ_ONLY_MCP = re.compile(r"^(list_|describe_|get_|search_|read_me|grep_|find_|query|inspect|take_screenshot|"
+                           r"capture|screenshot|focus|select|help)", re.I)
+_SEP = re.compile(r"\|\||&&|;|\||\n|&(?!>)")
+# commands whose LAST positional argument is the written path
+_DEST_LAST = {"cp", "mv", "install", "rsync", "copy", "move", "xcopy", "robocopy", "ln"}
+_PS_WRITERS = {"set-content", "out-file", "add-content", "new-item", "copy-item", "move-item"}
 
 
 def _paths_from_patch(text):
@@ -55,16 +56,50 @@ def written_paths(tool, tool_input):
     return [p.strip() for p in paths if p]
 
 
-def shell_violations(command):
+def _split_tokens(segment):
+    try:
+        return shlex.split(segment, posix=True)
+    except ValueError:
+        return segment.split()
+
+
+def shell_write_targets(command):
+    """Paths a shell command line writes to (best effort, quote-aware)."""
     if not isinstance(command, str):
         command = " ".join(map(str, command or []))
+    targets = []
+    # redirections, including quoted targets with spaces: > "My Map.umap", >>file, 2> x
+    for m in re.finditer(r"(?<![<>=-])\d?>{1,2}\s*(\"[^\"]+\"|'[^']+'|[^\s;|&]+)", command):
+        targets.append(m.group(1).strip("\"'"))
+    for seg in _SEP.split(command):
+        toks = _split_tokens(seg)
+        if not toks:
+            continue
+        cmd = os.path.basename(toks[0]).lower()
+        if cmd in ("sudo", "command", "env") and len(toks) > 1:
+            toks = toks[1:]
+            cmd = os.path.basename(toks[0]).lower()
+        args = [t for t in toks[1:] if not t.startswith("-") and ">" not in t]
+        if cmd in _DEST_LAST and args:
+            targets.append(args[-1])
+        elif cmd == "tee":
+            targets.extend(args)
+        elif cmd == "dd":
+            targets.extend(t[3:] for t in toks[1:] if t.startswith("of="))
+        elif cmd in _PS_WRITERS:
+            named = [toks[i + 1] for i, t in enumerate(toks[:-1])
+                     if t.lower() in ("-path", "-literalpath", "-filepath", "-destination")]
+            targets.extend(named or args[:1] if cmd not in ("copy-item", "move-item") else named or args[-1:])
+    return targets
+
+
+def shell_violations(command):
     bad = []
-    for m in SHELL_WRITE.finditer(command):
-        target = m.group("redir") or m.group("args") or ""
+    for target in shell_write_targets(command):
         if NATIVE_EXT.search(target):
-            bad.append("shell write to a native asset path: %s" % target.strip()[:120])
+            bad.append("shell write to a native asset path: %s" % target[:120])
         if PROTECTED.search(target):
-            bad.append("shell write to UE-Direct evidence: %s" % target.strip()[:120])
+            bad.append("shell write to UE-Direct evidence: %s" % target[:120])
     return bad
 
 
@@ -86,9 +121,14 @@ def check_pre_tool(payload):
     return reasons
 
 
+_UED_ONLY = re.compile(r"^\s*(?:\S*python3?(?:\.exe)?|py)\s+(?:-\S+\s+)*\"?[^\s\";&|<>`$()]*[\\/]ued\.py\"?"
+                       r"(?:\s+[^;&|<>`$()]*)?$")
+
+
 def _is_ued(cmd):
+    """Exempt only a single plain `python .../ued.py ...` invocation (no shell operators)."""
     text = cmd if isinstance(cmd, str) else " ".join(map(str, cmd))
-    return bool(re.search(r"ued\.py\b|\bued\s", text)) and not re.search(r"[>|]", text.split("ued", 1)[-1])
+    return bool(_UED_ONLY.match(text.replace("\n", " ")))
 
 
 def _project_from(payload):
@@ -115,15 +155,22 @@ def handle(event, payload):
     if event == "post-tool":
         tool = payload.get("tool_name") or ""
         low = tool.lower()
-        if low.startswith("mcp__") and ("unreal" in low or "ue" in low.split("__")[1:2]):
-            args = json.dumps(payload.get("tool_input") or {})[:400]
-            relayed = "uedirect_editor" in args  # a relayed ued request records its own evidence
-            if not relayed and not READ_ONLY_MCP.search(tool.split("__")[-1] + " " + args[:80]):
+        server = low.split("__")[1] if low.startswith("mcp__") and low.count("__") >= 2 else ""
+        if "unreal" in server or server in ("ue", "ue5", "unreal-mcp"):
+            ti = payload.get("tool_input") or {}
+            args = json.dumps(ti)
+            if "uedirect_editor" in args:
+                return 0, None, ""  # a relayed ued request records its own evidence
+            name = tool.split("__")[-1]
+            if name == "call_tool" and isinstance(ti, dict):  # Epic tool search: look at the inner tool
+                inner = next((v for v in ti.values() if isinstance(v, str) and "." in v), "")
+                name = inner.split(".")[-1] or name
+            if "python" in name.lower() or not READ_ONLY_MCP.search(name):
                 os.makedirs(sdir, exist_ok=True)
                 completion.ensure_task(sdir)
                 append_jsonl(os.path.join(sdir, "evidence.jsonl"),
-                             {"t": now(), "src": "host", "kind": "external_mutation", "tool": tool,
-                              "task": (completion.load_task(sdir) or {}).get("id"), "level_affecting": True})
+                             {"t": now(), "src": "host", "kind": "external_call", "tool": tool, "inner": name,
+                              "task": (completion.load_task(sdir) or {}).get("id")})
         return 0, None, ""
     if event == "stop":
         task = completion.load_task(sdir)
