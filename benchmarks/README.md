@@ -9,9 +9,9 @@ Last local run:
 
 | objects | agent tool calls | editor round trips | bytes agent reads | plan bytes |
 |---|---|---|---|---|
-| 10 | 4 | 6 | 535 | 139 |
-| 100 | 4 | 6 | 538 | 142 |
-| 1000 | 4 | 9 | 542 | 145 |
+| 10 | 4 | 7 | 535 | 139 |
+| 100 | 4 | 7 | 538 | 142 |
+| 1000 | 4 | 10 | 542 | 145 |
 
 This shows the output size stays constant as N grows. It says nothing about model tokens or engine time, and it is not a comparison with another workflow.
 
