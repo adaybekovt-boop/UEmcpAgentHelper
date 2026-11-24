@@ -1,0 +1,9 @@
+{
+ "id": "save_reopen",
+ "prompt": "Open /Game/Bench/Place10, add a point light above the cluster, save, close and reopen the level to prove the light persisted.",
+ "checks": {
+  "level": "/Game/Bench/Place10",
+  "setup": "place_10",
+  "min_actors": 13
+ }
+}

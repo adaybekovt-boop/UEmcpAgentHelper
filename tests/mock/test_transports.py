@@ -144,6 +144,27 @@ class McpTransportTests(helpers.ProjectTestCase):
         finally:
             srv.close()
 
+    def test_skips_mcp_server_of_another_project(self):
+        other = MockUnrealMcp("/elsewhere/Other.uproject")
+        try:
+            self._use_real_selection(other.url)
+            os.environ["UED_TRANSPORT"] = "auto"
+            from uedirect.project import find_project
+            from uedirect.session import Session
+            sess = Session(find_project(self.project_dir))
+            sess.cfg["mcp_url"] = other.url
+            from uedirect.transports.py_remote import PyRemoteTransport
+            orig = PyRemoteTransport.probe
+            PyRemoteTransport.probe = lambda self, timeout=1.5: None
+            try:
+                with self.assertRaises(helpers.TransportError) as ctx:
+                    sess.select_transport(force_probe=True)
+            finally:
+                PyRemoteTransport.probe = orig
+            self.assertIn("other project", str(ctx.exception))
+        finally:
+            other.close()
+
     def test_probe_reads_instance_metadata(self):
         from uedirect.transports.mcp_http import McpHttpTransport
         srv = MockUnrealMcp("/x/Demo.uproject")

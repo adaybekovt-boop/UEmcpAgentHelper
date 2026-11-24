@@ -1,0 +1,8 @@
+{
+ "id": "mass_material",
+ "prompt": "In /Game/Bench/Place100, change the material of every rock to a new red material instance of an existing master material. Save.",
+ "checks": {
+  "level": "/Game/Bench/Place100",
+  "setup": "place_100"
+ }
+}

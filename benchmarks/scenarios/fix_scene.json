@@ -1,0 +1,8 @@
+{
+ "id": "fix_scene",
+ "prompt": "/Game/Bench/Broken has floating props, two duplicated stacked meshes and a missing light. Fix the scene and save it.",
+ "checks": {
+  "level": "/Game/Bench/Broken",
+  "setup": "broken"
+ }
+}

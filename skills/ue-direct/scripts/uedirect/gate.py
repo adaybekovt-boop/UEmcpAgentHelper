@@ -11,6 +11,7 @@ import time
 
 from . import logs, procs
 from .project import compat, editor_binary, parse_version, read_build_version, resolve_engine
+from .session import RelayPending
 from .transports.base import TransportError
 from .transports.mcp_http import discover_urls
 from .util import UedHostError, now, read_json, write_json
@@ -93,6 +94,9 @@ def run_gate(session, expect_level=None, do_launch=False, wait=None):
     out = {"project": project.name}
     eng = engine_info(project)
     t0 = time.time()
+    if session.cfg["transport"] == "relay":
+        # Relay: the agent carries each request; ask the editor for its state (exit 3 -> `ued result`).
+        return _finish(session, out, expect_level, t0)
     mine, others = procs.processes_for_project(procs.list_editor_processes(), project)
     out["editor"] = {"running": bool(mine), "pids": [p["pid"] for p in mine][:4], "other_projects": len(others)}
     launched = None
@@ -121,6 +125,8 @@ def run_gate(session, expect_level=None, do_launch=False, wait=None):
 def _finish(session, out, expect_level, t0):
     try:
         state, sess_id = _state(session)
+    except RelayPending:
+        raise
     except (TransportError, UedHostError) as exc:
         out.update(status="blocked", blockers=[{"code": getattr(exc, "code", "ERROR"), "detail": str(exc)}])
         return out
@@ -172,6 +178,20 @@ def _wait_ready(session, out, expect_level, launched_pid, timeout, t0):
     return out
 
 
+def _port_busy(port):
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.3)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _free_port():
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 def launch(session, engine):
     """Start the editor for this project with the needed channels enabled via
     command-line overrides (project config files are not modified)."""
@@ -185,14 +205,19 @@ def launch(session, engine):
     if not os.path.isfile(binary):
         raise UedHostError("EDITOR_BINARY_MISSING", "editor binary not found: %s" % binary)
     args = [project.uproject]
+    mcp_url = None
     if session.cfg["transport"] in ("auto", "mcp"):
         url = session.cfg.get("mcp_url") or discover_urls(project.dir)[0]
-        port = url.split("://", 1)[-1].split("/", 1)[0].rsplit(":", 1)[-1]
-        args += ["-ModelContextProtocolStartServer", "-ModelContextProtocolPort=%s" % port]
+        host_port = url.split("://", 1)[-1].split("/", 1)[0]
+        port = int(host_port.rsplit(":", 1)[-1]) if ":" in host_port else 80
+        if _port_busy(port):
+            port = _free_port()  # another editor already serves MCP on the default port
+        mcp_url = "http://127.0.0.1:%d/mcp" % port
+        args += ["-ModelContextProtocolStartServer", "-ModelContextProtocolPort=%d" % port]
     if session.cfg["transport"] in ("auto", "remote") and not project.python_remote_settings()["enabled"]:
         args.append(PY_REMOTE_INI)
     log_path = session.path("editor_stdout.log")
     pid = procs.launch_editor(binary, args, log_path)
-    write_json(session.path("launch.json"), {"pid": pid, "t": now(), "args": args})
+    write_json(session.path("launch.json"), {"pid": pid, "t": now(), "args": args, "mcp_url": mcp_url})
     session.journal("launch", pid=pid, args=args)
     return pid

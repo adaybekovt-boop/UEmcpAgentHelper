@@ -1,0 +1,9 @@
+{
+ "id": "place_1000",
+ "prompt": "Create the level /Game/Bench/Place1000 and place 1000 props from the project's assets on a 40x25 grid with 2 m spacing, with basic outdoor lighting. Save it.",
+ "checks": {
+  "level": "/Game/Bench/Place1000",
+  "min_actors": 1002,
+  "max_actors": 1100
+ }
+}

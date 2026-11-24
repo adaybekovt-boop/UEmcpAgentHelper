@@ -37,15 +37,18 @@ def start_task(sdir, kind, goal=None, level=None, min_actors=None, visual=None, 
     if kind not in KINDS:
         raise UedHostError("BAD_KIND", "kind must be one of %s" % ", ".join(sorted(KINDS)))
     cur = load_task(sdir)
+    inherited_start = None
     if cur and cur.get("status") == "active":
         if cur.get("kind") == "auto":
+            # keep the work already recorded under the auto-started task
+            inherited_start = cur["started"]
             cur["status"] = "superseded"
             _archive(sdir, cur)
         else:
             raise UedHostError("TASK_ACTIVE", "task %s (%s) is still active" % (cur["id"], cur["kind"]),
                                hint="run `ued complete`, or `ued task block --reason ...`")
     needs, save, rel, vis, func = KINDS[kind]
-    task = {"id": new_id("t"), "kind": kind, "goal": goal, "started": now(), "status": "active",
+    task = {"id": new_id("t"), "kind": kind, "goal": goal, "started": inherited_start or now(), "status": "active",
             "expect": {"level": level, "min_actors": min_actors},
             "requires": {"changes": needs, "save": save, "reload": rel if reload is None else reload,
                          "visual": vis if visual is None else visual,

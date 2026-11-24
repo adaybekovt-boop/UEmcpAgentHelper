@@ -1,0 +1,9 @@
+{
+ "id": "place_10",
+ "prompt": "Create the level /Game/Bench/Place10 and place 10 rock meshes from the project's assets in a loose cluster around the origin, plus a directional light and a sky light. Save it.",
+ "checks": {
+  "level": "/Game/Bench/Place10",
+  "min_actors": 12,
+  "max_actors": 40
+ }
+}

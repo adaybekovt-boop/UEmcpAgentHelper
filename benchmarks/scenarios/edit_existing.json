@@ -1,0 +1,8 @@
+{
+ "id": "edit_existing",
+ "prompt": "In /Game/Bench/Place100, move all trees 2 m up and delete nothing. Save.",
+ "checks": {
+  "level": "/Game/Bench/Place100",
+  "setup": "place_100"
+ }
+}

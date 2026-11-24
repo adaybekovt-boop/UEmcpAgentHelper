@@ -1,0 +1,21 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell",
+        "hooks": [{"type": "command", "command": "{UED} hook pre-tool", "timeout": 10}]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "mcp__.*",
+        "hooks": [{"type": "command", "command": "{UED} hook post-tool", "timeout": 10}]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [{"type": "command", "command": "{UED} hook stop", "timeout": 30}]
+      }
+    ]
+  }
+}

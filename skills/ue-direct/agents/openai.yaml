@@ -1,0 +1,5 @@
+interface:
+  display_name: "UE-Direct"
+  short_description: "Editor-first Unreal Engine execution: real assets, verified saves, minimal tokens"
+policy:
+  allow_implicit_invocation: true

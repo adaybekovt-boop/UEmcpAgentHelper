@@ -76,15 +76,20 @@ class _Chunk(object):
         """Label, folder, tags, mesh, materials, props. Returns True if anything changed."""
         changed = False
         if op.get("label") and actor_label(actor) != op["label"]:
+            old_label = actor_label(actor)
+            self.undo.append(lambda: actor.set_actor_label(old_label))
             actor.set_actor_label(op["label"])
             changed = True
         if "folder" in op and str(actor.get_folder_path()) != op["folder"]:
+            old_folder = str(actor.get_folder_path())
+            self.undo.append(lambda: actor.set_folder_path(old_folder))
             actor.set_folder_path(op["folder"])
             changed = True
         if op.get("tags"):
             cur = [str(t) for t in actor.tags]
             want = cur + [t for t in op["tags"] if t not in cur]
             if want != cur:
+                self._remember_prop(actor, "tags")
                 actor.set_editor_property("tags", [unreal.Name(t) for t in want])
                 changed = True
         if op.get("mesh"):
@@ -437,7 +442,9 @@ def _level():
 
 
 def _run_op(chunk, i, op, kind):
+    """Run one op atomically: if it raises, undo whatever it changed before failing."""
     fn = getattr(chunk, "op_" + kind, None)
+    mark = len(chunk.undo)
     try:
         if fn is None:
             raise UedError("BAD_OP", "unknown op %r" % kind)
@@ -450,6 +457,13 @@ def _run_op(chunk, i, op, kind):
             if kind == "spawn":
                 chunk.spawn_ids.append(op["id"])
     except Exception as exc:  # noqa: BLE001
+        for undo in reversed(chunk.undo[mark:]):
+            try:
+                undo()
+            except Exception:  # noqa: BLE001
+                pass
+        del chunk.undo[mark:]
+        chunk.ctx._index = None
         chunk.counts["failed"] += 1
         chunk.failed.append({"i": i, "id": op.get("id"), "op": kind, "code": getattr(exc, "code", "EXCEPTION"),
                              "msg": str(exc)[:300]})

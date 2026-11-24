@@ -1,0 +1,7 @@
+{
+ "id": "asset_search",
+ "prompt": "List the 5 most suitable existing meshes in this project for building a medieval wall, with their asset paths. Do not modify anything.",
+ "checks": {
+  "read_only": true
+ }
+}

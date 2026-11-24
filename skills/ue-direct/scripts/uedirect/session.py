@@ -89,11 +89,15 @@ class Session(object):
             return self._transport
         tried = []
         if mode in ("auto", "mcp"):
-            urls = [self.cfg["mcp_url"]] if self.cfg.get("mcp_url") else discover_urls(self.project.dir)
+            urls = [self.cfg["mcp_url"]] if self.cfg.get("mcp_url") else self.mcp_urls()
             for url in urls:
                 t = McpHttpTransport(url, cache_path=self.path("mcp_plan.json"), timeout=self.cfg["call_timeout"])
                 info = t.probe(timeout=2.0)
                 tried.append("mcp:" + url)
+                if info and info.get("project_file") and \
+                        _norm(info["project_file"]) != _norm(self.project.uproject):
+                    tried[-1] += "(other project)"
+                    continue  # another project's editor owns this port
                 if info:
                     write_json(self.path("channel.json"), {"kind": "mcp", "url": url, "t": now(), "info": info})
                     self._transport = t
@@ -112,6 +116,10 @@ class Session(object):
             pass
         raise TransportError("no editor channel answered (%s)" % ", ".join(tried), code="NO_EDITOR_CHANNEL",
                              hint="run `ued up` to launch/attach the editor, or `ued doctor` for diagnosis")
+
+    def mcp_urls(self):
+        launched = (read_json(self.path("launch.json"), {}) or {}).get("mcp_url")
+        return ([launched] if launched else []) + [u for u in discover_urls(self.project.dir) if u != launched]
 
     def probe_info(self):
         return (read_json(self.path("channel.json"), {}) or {}).get("info")
@@ -184,6 +192,11 @@ class Session(object):
             raise UedHostError(err.get("code", "EDITOR_ERROR"), err.get("message", "editor error"),
                                data={"trace": err.get("trace")} if err.get("trace") else None)
         return resp
+
+
+def _norm(p):
+    p = os.path.abspath(p).replace("\\", "/")
+    return p.lower() if os.name == "nt" else p
 
 
 def _wait_file(path, seconds):

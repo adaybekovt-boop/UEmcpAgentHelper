@@ -71,7 +71,7 @@ def _dispatch(req):
         "level_new": (persist.cmd_level_new, True),
         "level_open": (persist.cmd_level_open, True),
         "save": (persist.cmd_save, True),
-        "verify": (persist.cmd_verify, False),
+        "verify": (persist.cmd_verify, True),  # may reload the level: never during PIE
         "shot": (capture.cmd_shot, False),
         "camera_restore": (capture.cmd_camera_restore, False),
         "pie_start": (capture.cmd_pie_start, True),

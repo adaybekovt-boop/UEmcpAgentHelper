@@ -33,7 +33,11 @@ def _keep(sess, name, payload):
 
 
 def _require_gate(sess, level=None):
-    """Execution Guard (host half): mutating commands need a ready editor."""
+    """Execution Guard (host half): mutating commands need a ready editor.
+    In relay mode the host cannot call the editor synchronously; the in-editor
+    guard (run before every command) enforces project/world/PIE checks instead."""
+    if sess.cfg["transport"] == "relay":
+        return {"status": "ready", "channel": "relay"}
     res = gate.run_gate(sess, expect_level=level)
     if res["status"] != "ready":
         raise UedHostError("GATE_BLOCKED", "editor gate is not ready", data={"gate": {
@@ -43,6 +47,8 @@ def _require_gate(sess, level=None):
 
 def _gate_cached(sess, max_age=120.0):
     """Reuse a recent successful gate (persistent session); otherwise run it."""
+    if sess.cfg["transport"] == "relay":
+        return
     last = [e for e in read_jsonl(sess.path("evidence.jsonl"))[-200:] if e.get("kind") == "gate"]
     if last and last[-1].get("status") == "ready" and now() - last[-1]["t"] < max_age:
         return

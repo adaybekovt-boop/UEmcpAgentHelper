@@ -1,0 +1,8 @@
+{
+ "id": "city_district",
+ "prompt": "Create /Game/Bench/District: a small city district of 4x4 blocks with buildings, streets with street lights, a plaza in the middle and a PlayerStart. Use only existing project assets. Make it look coherent and save it.",
+ "checks": {
+  "level": "/Game/Bench/District",
+  "min_actors": 80
+ }
+}

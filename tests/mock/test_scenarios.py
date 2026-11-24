@@ -101,6 +101,19 @@ class Scenarios(helpers.ProjectTestCase):
         code, res = self.ued("gate")
         self.assertEqual(res["status"], "ready")
 
+    def test_05b_verify_reload_refused_during_pie(self):
+        unreal.ENGINE.pie = True
+        code, res = self.ued("verify", "--reload")      # host gate stops it first
+        self.assertEqual(res["code"], "GATE_BLOCKED")
+        self.assertIn("PIE_RUNNING", json.dumps(res))
+        from uedirect.project import find_project       # and the in-editor guard stops it too
+        from uedirect.session import Session
+        from uedirect.util import UedHostError
+        with self.assertRaises(UedHostError) as ctx:
+            Session(find_project(self.project_dir)).request("verify", {"reload": True})
+        self.assertEqual(ctx.exception.code, "GUARD_PIE")
+        unreal.ENGINE.pie = False
+
     # 6 ------------------------------------------------------------------
     def test_06_level_not_saved(self):
         self.ued("task", "start", "--kind", "content", expect_code=0)

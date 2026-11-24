@@ -1,0 +1,9 @@
+{
+ "id": "place_100",
+ "prompt": "Create the level /Game/Bench/Place100 and place 100 tree or rock meshes from the project's assets scattered over a 100x100 m area without overlaps, with basic outdoor lighting. Save it.",
+ "checks": {
+  "level": "/Game/Bench/Place100",
+  "min_actors": 102,
+  "max_actors": 160
+ }
+}
